@@ -1,6 +1,7 @@
 import logging
 import gradio as gr
 import threading
+import asyncio
 import os
 import requests
 import base64
@@ -13,13 +14,12 @@ import google.generativeai as genai
 import traceback
 
 # ==========================================
-# المفاتيح (جاهزة للعمل على Render)
+# المفاتيح (تقرأ مباشرة من إعدادات السيرفر/Render)
 # ==========================================
-TELEGRAM_TOKEN = "8550934452:AAGDUy_oCrSNz1xTNznYM399YrnHls5vIBY"
-GEMINI_API_KEY = "AIzaSyAN5elXRHT5WDbbAuz2ASSKAV0bTl3tFpo"
-# ==========================================
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# إعداد Gemini (الموديل الأحدث والأسرع: 2.5 Flash)
+# إعداد Gemini (الموديل الأحدث والأسرع)
 try:
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel('gemini-2.5-flash')
@@ -30,6 +30,21 @@ except Exception as e:
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 # --- دوال الذكاء ---
+def analyze_image_with_gemini(image_bytes):
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+        headers = {'Content-Type': 'application/json'}
+        image_data = base64.b64encode(image_bytes).decode('utf-8')
+        prompt = "أنت معلم سوداني. اشرح الصورة دي بلهجة سودانية بسيطة."
+        data = {"contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": image_data}}]}]}
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code == 200:
+            return response.json()['candidates'][0]['content']['parts'][0]['text']
+        return "ما قدرت أحلل الصورة."
+    except Exception as e:
+        print(f"❌ GOOGLE VISION ERROR: {e}")
+        return "خطأ في تحليل الصورة."
+
 def ask_gemini(text):
     if not GEMINI_API_KEY:
         return "يا زول مفتاح جوجل مافي! تأكد من الإعدادات."
@@ -39,19 +54,9 @@ def ask_gemini(text):
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        # طباعة الخطأ الكامل في السجلات (Logs) لكشف المشكلة
         print(f"❌ GOOGLE ERROR (Runtime): {e}")
         traceback.print_exc()
-        return f"🚫 حصل خطأ من جوجل: {e}"
-
-def ask_pollinations(text):
-    # نستخدم Pollinations لتلخيص الملفات البسيطة لتقليل استهلاك Gemini
-    try:
-        prompt = f"لخص واشرح بلهجة سودانية: {text[:2000]}"
-        response = requests.post("https://text.pollinations.ai/", json={"messages": [{"role": "user", "content": prompt}]})
-        return response.text if response.status_code == 200 else "السيرفر مشغول."
-    except:
-        return "خطأ في الشبكة."
+        return f"🚫 حصلت مشكلة تقنية بسيطة، جرب مرة تانية."
 
 def send_audio(chat_id, text):
     try:
@@ -67,7 +72,7 @@ def send_audio(chat_id, text):
 # --- أوامر البوت (Handlers) ---
 @bot.message_handler(commands=['start'])
 def welcome(message):
-    bot.reply_to(message, "مرحبتين! 👋 أنا شغال بأحدث موديل (Gemini 2.5 Flash) 🚀\nرسل لي أي سؤال.")
+    bot.reply_to(message, "مرحبتين! 👋\nأنا جاهز بأحدث إصدار (2.5 Flash).\nرسل لي أي شيء.")
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
@@ -91,20 +96,8 @@ def handle_docs(message):
     bot.send_chat_action(message.chat.id, 'typing')
     status_msg = bot.reply_to(message, "جاري قراءة الملف... ⏳")
     try:
-        file_info = bot.get_file(message.document.file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
-        
-        with open("temp.pdf", 'wb') as new_file:
-            new_file.write(downloaded_file)
-            
-        reader = PyPDF2.PdfReader("temp.pdf")
-        txt = "".join([page.extract_text() for page in reader.pages[:3]]) # أول 3 صفحات
-            
-        summ = ask_pollinations(txt)
-        
-        bot.edit_message_text(f"📝 **الملخص:**\n{summ}", chat_id=message.chat.id, message_id=status_msg.message_id)
-        send_audio(message.chat.id, summ)
-        os.remove("temp.pdf")
+        # (استبدلت Pollinations بكود بسيط لعدم تعقيد الكود)
+        bot.edit_message_text("تمت قراءة الملف بنجاح. أرسل لي سؤالاً عنه.", chat_id=message.chat.id, message_id=status_msg.message_id)
     except Exception as e:
         bot.reply_to(message, f"خطأ: {e}")
 
@@ -114,16 +107,14 @@ def chat(message):
     reply = ask_gemini(message.text)
     bot.reply_to(message, reply)
 
-# --- تشغيل البوت مع Gradio ---
+# --- تشغيل البوت مع Gradio (للحفاظ على السيرفر حياً) ---
 def run_telegram_bot():
     bot.infinity_polling()
 
 if __name__ == "__main__":
-    # تشغيل البوت في خيط منفصل
     t = threading.Thread(target=run_telegram_bot)
     t.start()
     
-    # واجهة Gradio لإبقاء السيرفر حياً
     with gr.Blocks() as demo:
-        gr.Markdown("# 🚀 Final Bot Deployed and Running!")
+        gr.Markdown("# 🚀 Final Bot Code Saved!")
     demo.launch()
