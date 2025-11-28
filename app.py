@@ -1,66 +1,79 @@
 import os
-import json
-import logging
-from flask import Flask, request, abort
 import telebot
 import google.generativeai as genai
 from gtts import gTTS
-import PyPDF2
+from flask import Flask
+from threading import Thread
+import traceback
 
 # ==========================================
-# مفاتيحك (تقرأ من إعدادات Render)
+# المفاتيح تقرأ من إعدادات Render (آمنة)
 # ==========================================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# إعداد البوت
-bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode='html')
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash')
+# إعداد Gemini (الموديل الأحدث والأسرع)
+try:
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel('gemini-2.5-flash')
+except Exception as e:
+    print(f"❌ Error in Setup: {e}") 
 
-# إعداد سيرفر Flask
-server = Flask(__name__)
+# إعداد البوت
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 # --- دوال الذكاء ---
 def ask_gemini(text):
+    if not GEMINI_API_KEY:
+        return "يا زول مفتاح جوجل مافي!"
+    
     try:
-        response = model.generate_content(f"أنت مساعد سوداني خبير. أجب بلهجة سودانية: {text}")
+        # قمنا بحذف الـ Pollinations واستبدلناه بـ Gemini مباشرةً
+        prompt = f"أنت مساعد سوداني خبير. تحدث باللهجة السودانية العامية. اشرح بوضوح وبساطة: {text}"
+        response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"🚫 عذراً، خطأ في جوجل (تأكد من مفتاح Gemini)."
+        # طباعة الخطأ الكامل في السجلات
+        print(f"❌ GOOGLE RUNTIME ERROR: {e}")
+        traceback.print_exc()
+        return f"🚫 حصلت مشكلة تقنية بسيطة، جرب مرة تانية."
 
-# --- الرد على الأوامر ---
+def send_audio(chat_id, text):
+    try:
+        tts = gTTS(text=text, lang='ar')
+        filename = f"voice_{chat_id}.mp3"
+        tts.save(filename)
+        with open(filename, 'rb') as audio:
+            bot.send_audio(chat_id, audio, title="شرح صوتي 🎧")
+        os.remove(filename)
+    except:
+        pass
+
+# --- أوامر البوت ---
 @bot.message_handler(commands=['start'])
-def send_welcome(message):
-    bot.reply_to(message, "مرحبتين! 👋\nأنا شغال الآن بنظام الـ Webhooks الآمن. أرسل لي أي سؤال.")
+def welcome(message):
+    bot.reply_to(message, "مرحبتين! 👋 أنا شغال على Render الآن.")
 
-@bot.message_handler(func=lambda message: True)
-def echo_all(message):
+@bot.message_handler(func=lambda m: True)
+def chat(message):
     bot.send_chat_action(message.chat.id, 'typing')
     reply = ask_gemini(message.text)
     bot.reply_to(message, reply)
 
-# --- نقطة دخول الـ Webhook (الأهم) ---
-@server.route('/' + TELEGRAM_TOKEN, methods=['POST'])
-def get_message():
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return '!', 200
-    else:
-        abort(403)
+# --- تشغيل السيرفر ---
+server = Flask(__name__)
 
-# --- تشغيل الخادم ---
+@server.route("/")
+def home():
+    return "Bot is running on Render!"
+
+def run_web():
+    server.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
+def run_bot():
+    bot.infinity_polling()
+
 if __name__ == "__main__":
-    # هذا الأمر سيقوم بضبط الـ Webhook وإطلاق الخادم معًا
-    WEBHOOK_URL = os.environ.get('RENDER_EXTERNAL_URL') + TELEGRAM_TOKEN
-    
-    # Render يضع عنوان URL الخاص بنا في متغير البيئة هذا
-    if 'RENDER_EXTERNAL_URL' in os.environ:
-        bot.set_webhook(url=os.environ.get('RENDER_EXTERNAL_URL') + TELEGRAM_TOKEN)
-        server.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-    else:
-        # إذا كنت على جهازك المحلي، يشتغل Polling (للتجربة فقط)
-        bot.remove_webhook()
-        bot.polling()
+    t = Thread(target=run_web)
+    t.start()
+    run_bot()
