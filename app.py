@@ -1,42 +1,36 @@
 import os
 import telebot
-import google.generativeai as genai
 from gtts import gTTS
 from flask import Flask
 from threading import Thread
-import traceback
+import PyPDF2
+import requests
 
 # ==========================================
-# المفاتيح تقرأ من إعدادات Render (آمنة)
+# ملاحظة: مفتاح Gemini محذوف نهائياً من الكود
 # ==========================================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-
-# إعداد Gemini (الموديل الأحدث والأسرع)
-try:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-2.5-flash')
-except Exception as e:
-    print(f"❌ Error in Setup: {e}") 
+# نحتاج هذا ليتعرف Render على البوت
+# GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") 
 
 # إعداد البوت
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-# --- دوال الذكاء ---
-def ask_gemini(text):
-    if not GEMINI_API_KEY:
-        return "يا زول مفتاح جوجل مافي!"
-    
+# --- دالة الذكاء المفتوح (التي لا تحتاج مفتاح) ---
+def get_ai_response(text):
     try:
-        # قمنا بحذف الـ Pollinations واستبدلناه بـ Gemini مباشرةً
+        # استخدام Pollinations AI لجميع الردود
         prompt = f"أنت مساعد سوداني خبير. تحدث باللهجة السودانية العامية. اشرح بوضوح وبساطة: {text}"
-        response = model.generate_content(prompt)
-        return response.text
+        response = requests.post("https://text.pollinations.ai/", json={"messages": [{"role": "user", "content": prompt}]})
+        
+        # إذا نجحت الخدمة
+        if response.status_code == 200:
+            return response.text
+        else:
+            return "عفواً، الخدمة المفتوحة مشغولة حالياً."
     except Exception as e:
-        # طباعة الخطأ الكامل في السجلات
-        print(f"❌ GOOGLE RUNTIME ERROR: {e}")
-        traceback.print_exc()
-        return f"🚫 حصلت مشكلة تقنية بسيطة، جرب مرة تانية."
+        return f"خطأ في الاتصال: {e}"
+
 
 def send_audio(chat_id, text):
     try:
@@ -49,15 +43,46 @@ def send_audio(chat_id, text):
     except:
         pass
 
-# --- أوامر البوت ---
+# --- أوامر البوت (Handlers) ---
 @bot.message_handler(commands=['start'])
 def welcome(message):
-    bot.reply_to(message, "مرحبتين! 👋 أنا شغال على Render الآن.")
+    bot.reply_to(message, "مرحبتين! 👋 أنا الآن شغال بنظام 'الذكاء المفتوح' (Open AI) ومستعد للإجابة على كل أسئلتك.")
 
-@bot.message_handler(func=lambda m: True)
-def chat(message):
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message):
+    # إيقاف تحليل الصور لأنها تحتاج مفتاح جوجل المرفوض
+    bot.reply_to(message, "🚫 خاصية تحليل الصور معطلة حالياً بسبب حظر جوجل للمفاتيح. أرسل سؤالاً نصياً بدلاً من ذلك.")
+
+@bot.message_handler(content_types=['document'])
+def handle_docs(message):
+    if message.document.mime_type != 'application/pdf':
+        bot.reply_to(message, "ملفات PDF بس يا غالي.")
+        return
+        
     bot.send_chat_action(message.chat.id, 'typing')
-    reply = ask_gemini(message.text)
+    status_msg = bot.reply_to(message, "جاري قراءة الملف... ⏳")
+    try:
+        file_info = bot.get_file(message.document.file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        
+        with open("temp.pdf", 'wb') as new_file:
+            new_file.write(downloaded_file)
+            
+        reader = PyPDF2.PdfReader("temp.pdf")
+        txt = "".join([page.extract_text() for page in reader.pages[:3]])
+        summ = get_ai_response(txt)
+        
+        bot.edit_message_text(f"📝 **الملخص:**\n{summ}", chat_id=message.chat.id, message_id=status_msg.message_id)
+        send_audio(message.chat.id, summ)
+        os.remove("temp.pdf")
+    except Exception as e:
+        bot.reply_to(message, f"خطأ: {e}")
+
+@bot.message_handler(func=lambda message: True)
+def chat(message):
+    # الآن كل الرسائل النصية تذهب للذكاء المفتوح
+    bot.send_chat_action(message.chat.id, 'typing')
+    reply = get_ai_response(message.text)
     bot.reply_to(message, reply)
 
 # --- تشغيل السيرفر ---
@@ -65,7 +90,7 @@ server = Flask(__name__)
 
 @server.route("/")
 def home():
-    return "Bot is running on Render!"
+    return "Bot is running on Open AI System!"
 
 def run_web():
     server.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
